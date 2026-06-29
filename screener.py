@@ -81,7 +81,8 @@ def fetch_stock(code):
 
     # 社名（日本語）。日本語名が無ければローマ字社名を翻訳（portfolio.pyの関数を再利用）
     name = info.get("longName") or info.get("shortName") or code
-    if name == info.get("shortName") and not info.get("longName"):
+    # 日本株(.T)は英語社名で返ることが多いので日本語へ翻訳（既に日本語ならそのまま）
+    if code.endswith(".T") and isinstance(name, str) and name.isascii():
         name = translate_ja(name) or name
 
     return {
@@ -100,6 +101,25 @@ def fetch_stock(code):
         "ma_dev": ma_dev,                           # 25日移動平均かい離%
         "hist": hist,
     }
+
+
+# 会社名・キーワードから銘柄候補を探す（コードが分からない時用）。東証(.T)を上に並べる。
+@st.cache_data(ttl=600, show_spinner=False)
+def search_symbols(query):
+    try:
+        quotes = yf.Search(query).quotes
+    except Exception:
+        return []
+    out = []
+    for q in quotes:
+        sym = q.get("symbol")
+        if not sym:
+            continue
+        out.append({"symbol": sym,
+                    "name": q.get("shortname") or q.get("longname") or sym,
+                    "exchange": q.get("exchange", "")})
+    out.sort(key=lambda x: not x["symbol"].endswith(".T"))   # 東証銘柄を先頭へ
+    return out[:10]
 
 
 # ===== バリュースコア（100点満点）=====
@@ -251,13 +271,38 @@ with col_btn:
     st.write("")  # 高さ合わせ
     go = st.button("分析", use_container_width=True, type="primary")
 
-if go and code_in:
-    with st.spinner(f"{code_in} を取得中…"):
-        data = fetch_stock(code_in)
+# 1銘柄を取得して保存する（コード入力からも、名前検索の結果からも呼ぶ）
+def do_analyze(code):
+    code = (code or "").strip().upper()
+    if not code:
+        return
+    with st.spinner(f"{code} を取得中…"):
+        data = fetch_stock(code)
     if data["price"] is None:
-        st.error(f"{code_in} のデータが取得できませんでした。コードを確認してください（日本株は .T を忘れずに）。")
+        st.error(f"{code} のデータが取得できませんでした。コードを確認してください（日本株は .T を忘れずに）。")
     else:
-        st.session_state.stocks[code_in] = data
+        st.session_state.stocks[code] = data
+
+if go and code_in:
+    do_analyze(code_in)
+
+# --- 銘柄名・会社名で探す（コードが分からない時）---
+with st.expander("🔎 銘柄名・会社名で探す（コードが分からない時）"):
+    with st.form("searchform", clear_on_submit=False):
+        kw = st.text_input("会社名やキーワード", placeholder="例：トヨタ / toyota / sony")
+        do_search = st.form_submit_button("検索")
+    if do_search and kw.strip():
+        st.session_state.search_results = search_symbols(kw.strip())
+    results = st.session_state.get("search_results", [])
+    if results:
+        for r in results:
+            c1, c2 = st.columns([5, 1])
+            mark = "🇯🇵 " if r["symbol"].endswith(".T") else ""
+            c1.write(f"{mark}{r['name']}（{r['symbol']}・{r['exchange']}）")
+            if c2.button("分析", key=f"pick_{r['symbol']}"):
+                do_analyze(r["symbol"])
+    elif do_search:
+        st.info("候補が見つかりませんでした。別のキーワードで試してください。")
 
 # --- 表示する銘柄を選ぶ（分析済みから）---
 if st.session_state.stocks:
