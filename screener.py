@@ -32,18 +32,26 @@ SECTOR_EN_TO_JP = {
 }
 
 
-# 英語社名を日本語に翻訳（Google翻訳の無料エンドポイント。失敗時は原文のまま）
-def translate_ja(text):
+# Google翻訳の無料エンドポイント（sl=元の言語, tl=訳す言語）。失敗時は原文のまま。
+def _gtranslate(text, sl, tl):
     if not text:
         return text
     try:
         r = requests.get("https://translate.googleapis.com/translate_a/single",
-                         params={"client": "gtx", "sl": "en", "tl": "ja", "dt": "t", "q": text},
+                         params={"client": "gtx", "sl": sl, "tl": tl, "dt": "t", "q": text},
                          timeout=10, headers={"User-Agent": "Mozilla/5.0"})
         data = r.json()
         return "".join(seg[0] for seg in data[0] if seg and seg[0])
     except Exception:
         return text
+
+
+def translate_ja(text):   # 英語 → 日本語（社名表示用）
+    return _gtranslate(text, "en", "ja")
+
+
+def translate_en(text):   # 日本語 → 英語（和名での銘柄検索用）
+    return _gtranslate(text, "ja", "en")
 
 
 # ===== データ取得（.info と 株価履歴 を各1回だけ。重いので10分キャッシュ）=====
@@ -106,8 +114,11 @@ def fetch_stock(code):
 # 会社名・キーワードから銘柄候補を探す（コードが分からない時用）。東証(.T)を上に並べる。
 @st.cache_data(ttl=600, show_spinner=False)
 def search_symbols(query):
+    q = query
+    if any(ord(ch) > 127 for ch in query):       # 和名など非ASCIIは英語に訳してから検索
+        q = translate_en(query) or query
     try:
-        quotes = yf.Search(query).quotes
+        quotes = yf.Search(q).quotes
     except Exception:
         return []
     out = []
