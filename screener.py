@@ -111,24 +111,52 @@ def fetch_stock(code):
     }
 
 
+# JPX（日本取引所）の上場銘柄一覧（証券コード＋日本語社名）を取得。和名検索に使う。
+# 月1更新の公式xls。失敗時は空リスト（その時は英訳→Yahoo検索にフォールバック）。1日キャッシュ。
+@st.cache_data(ttl=86400, show_spinner=False)
+def load_jpx():
+    import io
+    url = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+    try:
+        r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+        df = pd.read_excel(io.BytesIO(r.content), engine="xlrd")
+        code_col = next(c for c in df.columns if str(c).strip() == "コード")
+        name_col = next(c for c in df.columns if "銘柄名" in str(c))
+        rows = []
+        for code, name in zip(df[code_col].astype(str), df[name_col].astype(str)):
+            code = code.strip()
+            if code.isdigit():                       # 4桁の証券コードのみ
+                rows.append((code, name.strip()))
+        return rows
+    except Exception:
+        return []
+
+
 # 会社名・キーワードから銘柄候補を探す（コードが分からない時用）。東証(.T)を上に並べる。
 @st.cache_data(ttl=600, show_spinner=False)
 def search_symbols(query):
-    q = query
-    if any(ord(ch) > 127 for ch in query):       # 和名など非ASCIIは英語に訳してから検索
-        q = translate_en(query) or query
+    query = query.strip()
+    # 和名（非ASCII）は、まずJPX公式一覧から日本語社名で照合（最も確実）
+    if any(ord(ch) > 127 for ch in query):
+        jpx_hits = [{"symbol": code + ".T", "name": name, "exchange": "JPX"}
+                    for code, name in load_jpx() if query in name]
+        if jpx_hits:
+            return jpx_hits[:10]
+        q = translate_en(query) or query            # 見つからなければ英訳してYahoo検索へ
+    else:
+        q = query
     try:
         quotes = yf.Search(q).quotes
     except Exception:
         return []
     out = []
-    for q in quotes:
-        sym = q.get("symbol")
+    for item in quotes:
+        sym = item.get("symbol")
         if not sym:
             continue
         out.append({"symbol": sym,
-                    "name": q.get("shortname") or q.get("longname") or sym,
-                    "exchange": q.get("exchange", "")})
+                    "name": item.get("shortname") or item.get("longname") or sym,
+                    "exchange": item.get("exchange", "")})
     out.sort(key=lambda x: not x["symbol"].endswith(".T"))   # 東証銘柄を先頭へ
     return out[:10]
 
